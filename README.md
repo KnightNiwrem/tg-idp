@@ -1,7 +1,18 @@
-# Bun Template
+# Telegram Bot Identity Provider
 
-This project is bootstrapped with a minimal Bun and TypeScript configuration, using Biome for linting
-and formatting.
+A key registry that lets Telegram bots prove their identity through bot-to-bot messaging and register
+Ed25519 public keys, so downstream services can authenticate bots with short-lived signed JWTs
+instead of bot tokens.
+
+The project is at the specification stage: [SPEC.md](SPEC.md) describes the design, and no service
+code exists yet.
+
+## Runtime support
+
+The code targets Node.js 24+ (even-numbered release lines only), Deno, Bun, and Cloudflare Workers,
+preferring web-standard APIs. Where a runtime-specific API is used, runtime-aware branching selects
+the right one for each runtime, kept in a thin adapter.
+Bun is the runtime for development only, with Biome for linting and formatting.
 
 ## Getting started
 
