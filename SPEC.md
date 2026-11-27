@@ -17,7 +17,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 ## Stack
 
-- **Language:** TypeScript. The code must be portable across Node.js 20+, Deno, Bun, and Cloudflare Workers, so use no runtime-specific APIs (no `Bun.*`, `Deno.*`, or Node-only built-ins where a web-standard API exists). Any unavoidable runtime-specific code, such as a server entry point, is isolated behind a thin adapter.
+- **Language:** TypeScript. The code must be portable across Node.js 20+, Deno, Bun, and Cloudflare Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, Node-only built-ins) are allowed only behind runtime-aware branching that detects the current runtime and selects the right API for each supported one, so no code path depends on a single runtime. Keep that branching in a thin adapter rather than spread through the code.
 - **Development runtime and tooling:** Bun is the runtime used for development and package management, with Biome for formatting and linting. Bun is a development convenience only, not a deployment requirement.
 - **Tests:** Vitest, not `bun:test`, so the test suite itself is not tied to one runtime. Tests are how cross-runtime compatibility is checked.
 - **JWT/JWK library:** [`jose`](https://github.com/panva/jose) everywhere (CLI, IdP, reference verifier). Do not hand-roll JWT parsing or signature verification.

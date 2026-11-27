@@ -9,7 +9,8 @@ code exists yet.
 
 ## Runtime support
 
-The code targets Node.js 20+, Deno, Bun, and Cloudflare Workers, and uses no runtime-specific APIs.
+The code targets Node.js 20+, Deno, Bun, and Cloudflare Workers, preferring web-standard APIs. Where a
+runtime-specific API is used, runtime-aware branching selects the right one for each runtime.
 Bun is the runtime for development only, with Biome for linting and formatting.
 
 ## Getting started

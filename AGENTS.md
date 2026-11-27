@@ -14,9 +14,10 @@
 - Follow repository configuration and existing conventions for Bun tooling, Biome, formatting, linting,
   and type checking. Run checks appropriate to the change and report failures or checks not run.
 - Bun is the development runtime only. The code must also run on Node.js, Deno, and Cloudflare
-  Workers, so use web-standard APIs and no runtime-specific ones (`Bun.*`, `Deno.*`, `bun:*` modules,
-  or Node-only built-ins where a standard API exists). Isolate unavoidable runtime-specific code,
-  such as a server entry point, behind a thin adapter.
+  Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, `bun:*` modules,
+  Node-only built-ins) are allowed only behind runtime-aware branching that detects the current
+  runtime and selects the right API for each supported one. Keep that branching in a thin adapter
+  rather than spread through the code.
 - Write tests with Vitest, not `bun:test`, so the test suite is not tied to one runtime.
 - [SPEC.md](SPEC.md) is the design specification. Implement to it, and update it in the same change
   when a design decision changes.
