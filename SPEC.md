@@ -6,7 +6,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 1. **Provisioning time (one-time setup / rotation)**
    - A bot owner runs a local CLI with their `BOT_TOKEN`.
-   - The CLI generates an Ed25519 keypair, computes a deterministic `kid`, and uses `BOT_TOKEN` *locally* to call Telegram's `sendMessage` to `@<AuthBot>` with `/register <pubKey> <audiences>`. `BOT_TOKEN` never touches our backend.
+   - The CLI generates an Ed25519 keypair, computes a deterministic `kid`, and uses `BOT_TOKEN` _locally_ to call Telegram's `sendMessage` to `@<AuthBot>` with `/register <pubKey> <audiences>`. `BOT_TOKEN` never touches our backend.
    - Telegram delivers the private message to our **Auth Bot** with a Telegram-verified `message.from.id` (`botId`) and `message.from.is_bot === true`.
    - The Auth Bot stores `(botId, kid) -> { publicKey, audiences, createdAt }` and records the command outcome.
    - The Auth Bot never replies. The CLI learns the outcome from a status endpoint, then signs a test JWT and calls `GET /v1/auth/verify` to confirm the key works end to end.
@@ -64,6 +64,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 - `GET /v1/bots/:botId/jwks`
   - Returns a standard JWK Set for all active keys of `:botId`:
+
     ```json
     {
       "keys": [
