@@ -17,7 +17,9 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 ## Stack
 
-- **Language:** TypeScript. Core crypto/JWT logic must be portable across Node.js 20+, Deno, and Cloudflare Workers.
+- **Language:** TypeScript. The code must be portable across Node.js 20+, Deno, Bun, and Cloudflare Workers, so use no runtime-specific APIs (no `Bun.*`, `Deno.*`, or Node-only built-ins where a web-standard API exists). Any unavoidable runtime-specific code, such as a server entry point, is isolated behind a thin adapter.
+- **Development runtime and tooling:** Bun is the runtime used for development and package management, with Biome for formatting and linting. Bun is a development convenience only, not a deployment requirement.
+- **Tests:** Vitest, not `bun:test`, so the test suite itself is not tied to one runtime. Tests are how cross-runtime compatibility is checked.
 - **JWT/JWK library:** [`jose`](https://github.com/panva/jose) everywhere (CLI, IdP, reference verifier). Do not hand-roll JWT parsing or signature verification.
 - **Bot framework:** grammY, deployable on a VPS or serverless.
 - **Rate limiting:** grammY `ratelimiter` plugin, with Redis storage so limits are shared across instances (in-memory storage for tests and local dev).
