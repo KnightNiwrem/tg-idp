@@ -13,7 +13,7 @@
   edge cases, and update documentation when behavior or workflows change.
 - Follow repository configuration and existing conventions for Bun tooling, Biome, formatting, linting,
   and type checking. Run checks appropriate to the change and report failures or checks not run.
-- Bun is the development runtime only. The code must also run on Node.js, Deno, and Cloudflare
+- Bun is the development runtime only. The code must also run on Node.js 24+, Deno, and Cloudflare
   Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, `bun:*` modules,
   Node-only built-ins) are allowed only behind runtime-aware branching that detects the current
   runtime and selects the right API for each supported one. Keep that branching in a thin adapter

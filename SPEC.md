@@ -17,7 +17,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 ## Stack
 
-- **Language:** TypeScript. The code must be portable across Node.js 20+, Deno, Bun, and Cloudflare Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, Node-only built-ins) are allowed only behind runtime-aware branching that detects the current runtime and selects the right API for each supported one, so no code path depends on a single runtime. Keep that branching in a thin adapter rather than spread through the code.
+- **Language:** TypeScript. The code must be portable across Node.js 24+, Deno, Bun, and Cloudflare Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, Node-only built-ins) are allowed only behind runtime-aware branching that detects the current runtime and selects the right API for each supported one, so no code path depends on a single runtime. Keep that branching in a thin adapter rather than spread through the code.
 - **Development runtime and tooling:** Bun is the runtime used for development and package management, with Biome for formatting and linting. Bun is a development convenience only, not a deployment requirement.
 - **Tests:** Vitest, not `bun:test`, so the test suite itself is not tied to one runtime. Tests are how cross-runtime compatibility is checked.
 - **JWT/JWK library:** [`jose`](https://github.com/panva/jose) everywhere (CLI, IdP, reference verifier). Do not hand-roll JWT parsing or signature verification.
@@ -43,14 +43,18 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
     - `kid` is the first 16 characters of `base64url(SHA-256(rawPubKeyBytes))`.
     - `<audiences>` is **required**: a comma-separated list (e.g. `session,analytics`). Each entry is alphanumeric plus `-`, `_`, `.`; or the single entry `*` meaning all services. Registration without audiences is rejected. There is no implicit wildcard.
     - Upsert on `(botId, kid)`. Re-registering an existing `kid` **overwrites its audiences** and keeps `createdAt`.
+    - A `kid` with a revocation record (see `/revoke`) is rejected with `key_revoked`.
     - Enforce a configurable cap on active keys per `botId` (default: **10**). At the cap, a new `kid` is **rejected** with `key_limit_reached`; nothing is evicted. The count-and-insert must be atomic.
-  - `/revoke <kid>`: delete that `kid` for `from.id`.
-  - `/revoke_all`: delete all keys for `from.id`.
+  - `/revoke <kid>`: delete that `kid` for `from.id` and write a revocation record for `(botId, kid)`.
+  - `/revoke_all`: delete all keys for `from.id` and write a revocation record for each deleted `kid`.
+  - **Revocation records prevent revival.** While a revocation record for `(botId, kid)` exists, `/register` for that `kid` is rejected with `key_revoked`, and the status for that `kid` stays `revoked`. This stops a redelivered or replayed older `/register` from restoring a revoked key. Since `kid` is derived from the public key, the owner's remedy is to register a new keypair, which the CLI always does.
+    - Records are kept for a configurable retention period (default **48 hours**). It must exceed the time Telegram keeps undelivered updates (24 hours), so no `/register` sent before a revocation can still arrive after its record expires.
+    - Revocation records do not count toward the key cap.
   - There is no `/keys` command; the public JWKS endpoint serves that purpose.
 
 ### 2. Key Registry Storage Layer
 
-- A swappable `KeyStore` interface: `upsertKey`, `getKeysByBotId`, `getKey`, `deleteKey`, `deleteAllKeys`, `countKeys`, plus whatever is needed for command status records.
+- A swappable `KeyStore` interface: `upsertKey`, `getKeysByBotId`, `getKey`, `deleteKey`, `deleteAllKeys`, `countKeys`, plus whatever is needed for revocation records and command status records.
 - Key record:
   - `botId: number` (Telegram IDs exceed 32 bits; store as 64-bit integer)
   - `kid: string`
@@ -84,7 +88,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
   - A bot with no keys returns `200 { "keys": [] }`, never 404.
   - `Cache-Control: public, max-age=60`.
 - `GET /v1/bots/:botId/keys/:kid/status`
-  - Returns the outcome of the most recent command affecting `(botId, kid)`: `registered`, `revoked`, or an error code such as `key_limit_reached`, `invalid_public_key`, `invalid_audiences`. Returns 404 if nothing is recorded.
+  - Returns the outcome of the most recent command affecting `(botId, kid)`: `registered`, `revoked`, or an error code such as `key_limit_reached`, `key_revoked`, `invalid_public_key`, `invalid_audiences`. Returns 404 if nothing is recorded.
   - Status records may expire after a configurable retention period (default 24h).
   - `Cache-Control: no-store`.
   - Commands that cannot be tied to a `kid` (unparseable input, rate-limited before parsing) produce no status record. The CLI validates input locally before sending and, on timeout, lists these as likely causes.
@@ -122,12 +126,14 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 A small module downstream services can import or copy. Its only dependency is `jose`.
 
-- Read the unverified `sub` to locate the bot, then verify with `jose.jwtVerify` against that bot's JWKS.
-- Keep an LRU of `createRemoteJWKSet` instances keyed by `botId`.
-  - JWKS cache TTL: jose's default of **10 minutes** (`cacheMaxAge`), configurable.
-  - Unknown `kid` triggers a refetch, rate-limited by jose's cooldown (30s).
-- Enforce: `alg === "EdDSA"`, `sub` matches the JWKS owner, `aud === expectedService`, key-level scope (`key.aud` contains `*` or `expectedService`), `iat`/`exp` with ±30s tolerance, maximum lifetime (default 300s, configurable), and presence of `jti`.
-- `jti` is mandatory in every token. **Tracking `jti` to reject replays is each downstream service's choice**; expose an optional hook (e.g. `isReplay(jti, exp)`) and document that without it a captured token is replayable until it expires.
+- Read the unverified `sub` to locate the bot, then verify with `jose.jwtVerify` against a key set built from that bot's JWKS for this service.
+- **Build a service-scoped key set.** The module fetches `GET /v1/bots/:botId/jwks` itself, keeps only the keys whose `aud` member contains `*` or `expectedService`, and passes those to `jose.createLocalJWKSet`. It does not use `createRemoteJWKSet`, which exposes only the imported key and not the JWK's `aud` member, so it cannot filter by scope.
+  - Key-level scope is therefore enforced when the set is built: a token signed by a key registered for other services finds no matching key and is rejected.
+  - Keep an LRU of these key sets keyed by `botId`.
+  - Key set TTL: **10 minutes** (matching jose's `cacheMaxAge` default), configurable.
+  - An unknown `kid` triggers a refetch, limited to one per bot per 30 seconds (matching jose's cooldown).
+- Enforce: `alg === "EdDSA"`, `sub` matches the JWKS owner, `aud === expectedService` (via `jwtVerify`'s `audience` option; this complements the key-level scope filter and does not replace it), `iat`/`exp` with ±30s tolerance, maximum lifetime (default 300s, configurable), and presence of `jti`.
+- `jti` is mandatory in every token. **Tracking `jti` to reject replays is each downstream service's choice**; expose an optional hook (e.g. `isReplay(jti, exp)`). Because of the clock tolerance, a token is accepted until `exp` plus 30 seconds, so a service that tracks `jti` must retain each record until `exp` plus the tolerance. Document that without the hook a captured token is replayable for that whole period.
 
 ## Operational Semantics to Document
 
@@ -142,7 +148,7 @@ A small module downstream services can import or copy. Its only dependency is `j
 
 ## Known Open Gaps (do not implement; record in README)
 
-- **`update_id` deduplication is deliberately deferred.** Each command is idempotent on its own, so a plain redelivery is harmless. The unresolved risk is ordering: a redelivered old `/register` processed after a `/revoke` would resurrect a revoked key. Open design questions: whether to mark an `update_id` as seen at the start or the end of handling, and how to treat our own 5xx responses, which cause Telegram to redeliver. Do make handlers return 2xx for all handled outcomes, including rejected commands, so Telegram does not redeliver them needlessly.
+- **`update_id` deduplication is deliberately deferred.** Each command is idempotent on its own, and revocation records stop a redelivered older `/register` from reviving a revoked key, so redelivery cannot undo a revocation. The remaining effect is limited to live keys: a redelivered older `/register` can restore that key's previous audiences after a later re-registration changed them. Open design questions: whether to mark an `update_id` as seen at the start or the end of handling, and how to treat our own 5xx responses, which cause Telegram to redeliver. Do make handlers return 2xx for all handled outcomes, including rejected commands, so Telegram does not redeliver them needlessly.
 
 ## Tests
 
@@ -153,6 +159,8 @@ Unit and integration tests covering:
 - Update guards: `from.is_bot === false`, non-private chats, non-`message` updates, rate limit
 - `/register` validation: bad key length, missing audiences, invalid audience format, key cap rejection
 - `/revoke` and `/revoke_all` flows, including revoking another bot's `kid` having no effect
+- Revocation records: `/register` of a revoked `kid` rejected with `key_revoked` and status left as `revoked`; allowed again after the retention period; records not counted toward the key cap
+- Reference verifier scope filter: a token signed by a key registered for a different service is rejected
 - Status endpoint outcomes for success and each error code
 - JWKS response format, including the empty case
 - End-to-end JWT signing and verification: valid, expired, tampered payload, unknown `kid`, `sub` mismatch, wrong `aud`, key-scope mismatch, missing `jti`, over-long lifetime, `alg: none` and HS256 algorithm confusion
