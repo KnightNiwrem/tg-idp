@@ -13,6 +13,14 @@
   edge cases, and update documentation when behavior or workflows change.
 - Follow repository configuration and existing conventions for Bun tooling, Biome, formatting, linting,
   and type checking. Run checks appropriate to the change and report failures or checks not run.
+- Bun is the development runtime only. The code must also run on Node.js, Deno, and Cloudflare
+  Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, `bun:*` modules,
+  Node-only built-ins) are allowed only behind runtime-aware branching that detects the current
+  runtime and selects the right API for each supported one. Keep that branching in a thin adapter
+  rather than spread through the code.
+- Write tests with Vitest, not `bun:test`, so the test suite is not tied to one runtime.
+- [SPEC.md](SPEC.md) is the design specification. Implement to it, and update it in the same change
+  when a design decision changes.
 - For code-quality reviews and refactoring, use the
   [code-quality skill](.agents/skills/code-quality/SKILL.md).
 
