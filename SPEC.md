@@ -17,7 +17,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
 
 ## Stack
 
-- **Language:** TypeScript. The code must be portable across Node.js 24+, Deno, Bun, and Cloudflare Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, Node-only built-ins) are allowed only behind runtime-aware branching that detects the current runtime and selects the right API for each supported one, so no code path depends on a single runtime. Keep that branching in a thin adapter rather than spread through the code.
+- **Language:** TypeScript. The code must be portable across Node.js 24+ (even-numbered release lines; odd-numbered lines such as 25 are not targeted or tested), Deno, Bun, and Cloudflare Workers, so prefer web-standard APIs. Runtime-specific APIs (`Bun.*`, `Deno.*`, Node-only built-ins) are allowed only behind runtime-aware branching that detects the current runtime and selects the right API for each supported one, so no code path depends on a single runtime. Keep that branching in a thin adapter rather than spread through the code.
 - **Development runtime and tooling:** Bun is the runtime used for development and package management, with Biome for formatting and linting. Bun is a development convenience only, not a deployment requirement.
 - **Tests:** Vitest, not `bun:test`, so the test suite itself is not tied to one runtime. Tests are how cross-runtime compatibility is checked.
 - **JWT/JWK library:** [`jose`](https://github.com/panva/jose) everywhere (CLI, IdP, reference verifier). Do not hand-roll JWT parsing or signature verification.
@@ -43,18 +43,25 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
     - `kid` is the first 16 characters of `base64url(SHA-256(rawPubKeyBytes))`.
     - `<audiences>` is **required**: a comma-separated list (e.g. `session,analytics`). Each entry is alphanumeric plus `-`, `_`, `.`; or the single entry `*` meaning all services. Registration without audiences is rejected. There is no implicit wildcard.
     - Upsert on `(botId, kid)`. Re-registering an existing `kid` **overwrites its audiences** and keeps `createdAt`.
-    - A `kid` with a revocation record (see `/revoke`) is rejected with `key_revoked`.
-    - Enforce a configurable cap on active keys per `botId` (default: **10**). At the cap, a new `kid` is **rejected** with `key_limit_reached`; nothing is evicted. The count-and-insert must be atomic.
+    - Rejected if the `kid` has a revocation record, or if the message predates the bot's latest `/revoke_all` (see revocation records below).
+    - Enforce a configurable cap on active keys per `botId` (default: **10**). At the cap, a new `kid` is **rejected** with `key_limit_reached`; nothing is evicted.
   - `/revoke <kid>`: delete that `kid` for `from.id` and write a revocation record for `(botId, kid)`.
   - `/revoke_all`: delete all keys for `from.id` and write a revocation record for each deleted `kid`.
-  - **Revocation records prevent revival.** While a revocation record for `(botId, kid)` exists, `/register` for that `kid` is rejected with `key_revoked`, and the status for that `kid` stays `revoked`. This stops a redelivered or replayed older `/register` from restoring a revoked key. Since `kid` is derived from the public key, the owner's remedy is to register a new keypair, which the CLI always does.
-    - Records are kept for a configurable retention period (default **48 hours**). It must exceed the time Telegram keeps undelivered updates (24 hours), so no `/register` sent before a revocation can still arrive after its record expires.
+  - **Revocation records prevent revival.** They stop a redelivered, delayed, or replayed `/register` from restoring access that a revocation removed.
+    - While a revocation record for `(botId, kid)` exists, `/register` for that `kid` is rejected. Since `kid` is derived from the public key, the owner's remedy is to register a new keypair, which the CLI always does.
+    - `/revoke_all` also records its own `message.date` as the bot's revoke-all time. A `/register` whose `message.date` is at or before that time is rejected with `registration_predates_revoke_all`, whatever its `kid`. This covers a `/register` that was sent before the `/revoke_all` but processed after it, for a key that did not exist yet and so has no revocation record. Telegram dates have one-second resolution, so a `/register` sent in the same second as a `/revoke_all` is rejected too; the CLI waits for revocation to be confirmed before registering, which keeps them apart.
+    - A `/register` rejected because of a revocation record writes no status: the status for that `kid` stays `revoked`.
+    - Records and the revoke-all time are kept for a configurable retention period (default **48 hours**). It must exceed the time Telegram keeps undelivered updates (24 hours), so no `/register` sent before a revocation can still arrive after its record expires.
     - Revocation records do not count toward the key cap.
+  - **Each command is applied atomically.** All reads and writes for one command run in a single write transaction, so concurrent handlers for the same bot cannot interleave:
+    - `/register`: the revocation checks, the key-cap count, the upsert, and the status write.
+    - `/revoke` and `/revoke_all`: the deletes, the revocation records, the revoke-all time, and the status writes.
+    - The transaction must take the write lock before its first read (SQLite `BEGIN IMMEDIATE`; a libSQL `write` transaction), so a check is never made against a snapshot that a concurrent command then invalidates.
   - There is no `/keys` command; the public JWKS endpoint serves that purpose.
 
 ### 2. Key Registry Storage Layer
 
-- A swappable `KeyStore` interface: `upsertKey`, `getKeysByBotId`, `getKey`, `deleteKey`, `deleteAllKeys`, `countKeys`, plus whatever is needed for revocation records and command status records.
+- A swappable `KeyStore` interface. Reads: `getKeysByBotId`, `getKey`, `countKeys`, and command status lookup. Writes are command-level operations that the adapter applies atomically, as required above: register a key, revoke a key, revoke all keys. Handlers must not compose a command from separate check and write calls.
 - Key record:
   - `botId: number` (Telegram IDs exceed 32 bits; store as 64-bit integer)
   - `kid: string`
@@ -88,8 +95,8 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
   - A bot with no keys returns `200 { "keys": [] }`, never 404.
   - `Cache-Control: public, max-age=60`.
 - `GET /v1/bots/:botId/keys/:kid/status`
-  - Returns the outcome of the most recent command affecting `(botId, kid)`: `registered`, `revoked`, or an error code such as `key_limit_reached`, `key_revoked`, `invalid_public_key`, `invalid_audiences`. Returns 404 if nothing is recorded.
-  - Status records may expire after a configurable retention period (default 24h).
+  - Returns `revoked` while a revocation record for `(botId, kid)` exists. Otherwise returns the most recent recorded outcome for `(botId, kid)`: `registered`, or an error code such as `key_limit_reached`, `registration_predates_revoke_all`, `invalid_public_key`, `invalid_audiences`. Returns 404 if nothing is recorded.
+  - Status records other than `revoked` may expire after a configurable retention period (default 24h).
   - `Cache-Control: no-store`.
   - Commands that cannot be tied to a `kid` (unparseable input, rate-limited before parsing) produce no status record. The CLI validates input locally before sending and, on timeout, lists these as likely causes.
 - `GET /v1/auth/verify`
@@ -115,7 +122,7 @@ A standalone **Telegram Bot Identity Provider (Key Registry)** service and provi
     - `USER_BOT_TO_BOT_DISABLED`: tell the owner to enable Bot-to-Bot Communication Mode for their bot in @BotFather, and note that the same error appears if the Auth Bot has it disabled.
     - `chat not found`: the `--auth-bot` username is wrong.
     - Anything else: print the description unchanged.
-  - Polls the status endpoint with exponential backoff. On an error status, print the code and exit non-zero.
+  - Polls the status endpoint with exponential backoff. On an error status, or `revoked` for the `kid` being registered, print the code and exit non-zero.
   - On `registered`, signs a test JWT (using the first registered audience, or any audience if the scope is `*`) and calls `GET /v1/auth/verify` to confirm.
   - Outputs `botidp_v1_<payload>`, where `<payload>` is base64url of the JSON `{ v: 1, botId, kid, privKey }` and `privKey` is the **private JWK** (`{ kty, crv, x, d }`), directly usable with `jose.importJWK`.
   - `rotate` registers an additional key and does not revoke the old one; remind the owner to revoke the old `kid` once the new credential is deployed.
@@ -159,7 +166,9 @@ Unit and integration tests covering:
 - Update guards: `from.is_bot === false`, non-private chats, non-`message` updates, rate limit
 - `/register` validation: bad key length, missing audiences, invalid audience format, key cap rejection
 - `/revoke` and `/revoke_all` flows, including revoking another bot's `kid` having no effect
-- Revocation records: `/register` of a revoked `kid` rejected with `key_revoked` and status left as `revoked`; allowed again after the retention period; records not counted toward the key cap
+- Revocation records: `/register` of a revoked `kid` rejected with status left as `revoked`; allowed again after the retention period; records not counted toward the key cap
+- Revoke-all time: a `/register` dated at or before the latest `/revoke_all` is rejected with `registration_predates_revoke_all`, including for a `kid` never registered before; a later-dated one succeeds
+- Atomic commands: concurrent `/register` and `/revoke` for the same `kid` never leave the key active after the revocation is recorded; concurrent registrations never exceed the key cap
 - Reference verifier scope filter: a token signed by a key registered for a different service is rejected
 - Status endpoint outcomes for success and each error code
 - JWKS response format, including the empty case
