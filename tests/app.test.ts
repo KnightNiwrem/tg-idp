@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import app from '../src/app.ts';
 
 describe('HTTP API', () => {
-  test('responds 501 on outlined routes until implemented', async () => {
+  test('responds 501 on /health until implemented', async () => {
     const response = await app.request('/health');
     expect(response.status).toBe(501);
   });
