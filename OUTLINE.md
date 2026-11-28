@@ -35,13 +35,13 @@ Telegram updates can be delayed or redelivered, and the Auth Bot cannot reliably
 - **Public key format:** 32-byte raw Ed25519 public key (rejecting small-order points), encoded as unpadded base64url.
 - **Key ID (`kid`):** First 16 characters of `base64url(SHA-256(rawPubKeyBytes))`. Because it is deterministic, the CLI and IdP derive the same `kid` independently.
 
-| Property | Management Key | Service Key |
-| --- | --- | --- |
-| **Purpose** | Admin HTTP endpoints on the IdP | Authenticating to downstream services |
-| **Created via** | Telegram `/confirm` flow | `POST /v1/bots/:botId/keys` |
-| **Cap per bot** | **1** (new `/confirm` replaces old) | **10** (configurable; rejects at cap) |
-| **Lifetime** | Short-lived (configurable; default 30 min) | Long-lived until revoked |
-| **Published in JWKS** | Never | Yes |
+| Property              | Management Key                             | Service Key                           |
+| --------------------- | ------------------------------------------ | ------------------------------------- |
+| **Purpose**           | Admin HTTP endpoints on the IdP            | Authenticating to downstream services |
+| **Created via**       | Telegram `/confirm` flow                   | `POST /v1/bots/:botId/keys`           |
+| **Cap per bot**       | **1** (new `/confirm` replaces old)        | **10** (configurable; rejects at cap) |
+| **Lifetime**          | Short-lived (configurable; default 30 min) | Long-lived until revoked              |
+| **Published in JWKS** | Never                                      | Yes                                   |
 
 - At the service-key cap, registering a new `kid` returns `409 key_limit_reached` without evicting existing keys.
 - Re-registering an existing service `kid` with the same public key overwrites its `audiences` and keeps its original `createdAt`.
@@ -88,20 +88,20 @@ The provisioning CLI outputs self-contained, base64url-encoded JSON credentials 
 
 All limits and durations are configurable unless noted as fixed:
 
-| Setting | Default | Scope |
-| --- | --- | --- |
-| Management key cap | **1** (fixed) | Active management keys per bot |
-| Management key TTL | **30 minutes** | Lifetime of a confirmed management key |
-| Service key cap | **10** | Active service keys per bot |
-| Pending registration TTL | **5 minutes** | Window to confirm `/confirm <code>` |
-| Finished registration retention | **24 hours** | Retention before purging resolved registrations |
-| Service JWT max lifetime | **300 seconds** | Maximum `exp - iat` for downstream tokens |
-| Management JWT max lifetime | **60 seconds** | Maximum `exp - iat` for IdP management tokens |
-| JWT clock-skew tolerance | **±30 seconds** | Applied to `iat`/`exp` (not to management key TTL) |
-| Auth Bot rate limit | **10 / minute** | Per-`botId` private bot messages |
-| JWKS `Cache-Control` `max-age` | **60 seconds** | HTTP cache header on `/jwks` |
-| Reference verifier cache TTL | **10 minutes** | Per-bot cached JWKS lifetime |
-| Reference verifier refetch cooldown | **30 seconds** | Minimum interval between unknown-`kid` refetches per bot |
+| Setting                             | Default         | Scope                                                    |
+| ----------------------------------- | --------------- | -------------------------------------------------------- |
+| Management key cap                  | **1** (fixed)   | Active management keys per bot                           |
+| Management key TTL                  | **30 minutes**  | Lifetime of a confirmed management key                   |
+| Service key cap                     | **10**          | Active service keys per bot                              |
+| Pending registration TTL            | **5 minutes**   | Window to confirm `/confirm <code>`                      |
+| Finished registration retention     | **24 hours**    | Retention before purging resolved registrations          |
+| Service JWT max lifetime            | **300 seconds** | Maximum `exp - iat` for downstream tokens                |
+| Management JWT max lifetime         | **60 seconds**  | Maximum `exp - iat` for IdP management tokens            |
+| JWT clock-skew tolerance            | **±30 seconds** | Applied to `iat`/`exp` (not to management key TTL)       |
+| Auth Bot rate limit                 | **10 / minute** | Per-`botId` private bot messages                         |
+| JWKS `Cache-Control` `max-age`      | **60 seconds**  | HTTP cache header on `/jwks`                             |
+| Reference verifier cache TTL        | **10 minutes**  | Per-bot cached JWKS lifetime                             |
+| Reference verifier refetch cooldown | **30 seconds**  | Minimum interval between unknown-`kid` refetches per bot |
 
 ## System Components
 
