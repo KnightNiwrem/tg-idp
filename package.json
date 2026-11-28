@@ -1,16 +1,24 @@
 {
-  "name": "template-bun",
+  "name": "tg-idp",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.4.4",
   "scripts": {
-    "dev": "bun --watch src/main.ts",
-    "start": "bun src/main.ts",
+    "dev": "bun --watch src/entrypoints/server.ts",
+    "start": "bun src/entrypoints/server.ts",
+    "cli": "bun src/entrypoints/cli.ts",
     "fmt:check": "biome format .",
     "fmt": "biome format --write .",
     "lint": "biome lint --error-on-warnings .",
     "check": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@grammyjs/ratelimiter": "1.2.1",
+    "@libsql/client": "0.18.0",
+    "grammy": "1.48.0",
+    "hono": "4.13.23",
+    "jose": "6.2.18"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
