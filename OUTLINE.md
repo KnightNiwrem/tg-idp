@@ -261,6 +261,7 @@ A standalone module downstream services can import or copy, with `jose` as its o
 - **Language & runtimes:** TypeScript targeting **Node.js LTS release lines >= 24** (`24`, `26`, and `27+`; legacy non-LTS `25` and Alpha prereleases are not targeted), **Deno**, **Bun**, and **Cloudflare Workers**. Prefer web-standard APIs, isolating any runtime-specific code behind a thin adapter.
 - **Development tooling:** Bun for local development and package management (dev-only; not a deployment requirement) and Biome for linting and formatting.
 - **Testing:** Vitest (rather than `bun:test`) so the test suite can validate cross-runtime compatibility (using `@cloudflare/vitest-plugin` for Workers).
+- **HTTP routing:** [Hono](https://hono.dev), whose app is a web-standard fetch handler that runs unchanged on every target runtime (served directly by Workers and through the runtime adapter elsewhere).
 - **JWT/JWK:** [`jose`](https://github.com/panva/jose) across the IdP, CLI, and reference verifier.
 - **Bot framework & rate limiting:** grammY with the `ratelimiter` plugin (Redis or an HTTP-compatible store adapter in production/serverless; in-memory for local dev and tests).
 - **Storage:** SQLite via libSQL (`@libsql/client` for local files and remote Turso on Node/Deno/Bun; `@libsql/client/web` for Cloudflare Workers and edge runtimes), configured via environment variables.
