@@ -16,9 +16,9 @@
 - Bun is the development runtime only. The code must also run on Node.js LTS release lines from 24
   onward (24, 26, and every major from 27 on; the non-LTS 25 line and Alpha prereleases are not
   targeted), Deno, and Cloudflare Workers, so prefer web-standard APIs. Runtime-specific APIs
-  (`Bun.*`, `Deno.*`, `bun:*` modules, Node-only built-ins) are allowed only behind runtime-aware branching that detects the current runtime and
-  selects the right API for each supported one. Keep that branching in a thin adapter rather than
-  spread through the code.
+  (`Bun.*`, `Deno.*`, `bun:*` modules, Node-only built-ins) are allowed only behind runtime-aware
+  branching that detects the current runtime and selects the right API for each supported one.
+  Keep that branching in a thin adapter rather than spread through the code.
 - Write tests with Vitest, not `bun:test`, so the test suite is not tied to one runtime.
 - [OUTLINE.md](OUTLINE.md) is the initial design outline (not a finalised specification). Use it to
   direct implementation, and update or rework it in the same change when implementation reveals
