@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "template-bun",
+      "name": "tg-idp",
       "dependencies": {
         "@grammyjs/ratelimiter": "1.2.1",
         "@libsql/client": "0.18.0",
