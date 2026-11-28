@@ -9,7 +9,8 @@ and no service code exists yet.
 
 ## Runtime support
 
-The code targets Node.js 24+ (even-numbered release lines only), Deno, Bun, and Cloudflare Workers,
+The code targets Node.js LTS release lines from 24 onward (24, 26, and every major from 27 on; the
+non-LTS 25 line and Alpha prereleases are not targeted), Deno, Bun, and Cloudflare Workers,
 preferring web-standard APIs. Where a runtime-specific API is used, runtime-aware branching selects
 the right one for each runtime, kept in a thin adapter.
 Bun is the runtime for development only, with Biome for linting and formatting.
