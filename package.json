@@ -4,9 +4,9 @@
   "type": "module",
   "packageManager": "bun@1.4.4",
   "scripts": {
-    "dev": "bun --watch src/entrypoints/server.ts",
-    "start": "bun src/entrypoints/server.ts",
-    "cli": "bun src/entrypoints/cli.ts",
+    "dev": "bun --watch src/app.ts",
+    "start": "bun src/app.ts",
+    "cli": "bun src/cli.ts",
     "fmt:check": "biome format .",
     "fmt": "biome format --write .",
     "lint": "biome lint --error-on-warnings .",

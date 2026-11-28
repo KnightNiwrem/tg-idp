@@ -4,9 +4,8 @@ A key registry that lets Telegram bots prove their identity through bot-to-bot m
 Ed25519 public keys, so downstream services can authenticate bots with short-lived signed JWTs
 instead of bot tokens.
 
-The project is at the skeleton stage: [OUTLINE.md](OUTLINE.md) describes the initial design, and
-the source tree contains its module structure, types, and documented stubs. No features work yet;
-stubbed functions throw `NotImplementedError`, and HTTP routes respond `501`.
+The project is at the skeleton stage: [OUTLINE.md](OUTLINE.md) describes the initial design, and no
+features work yet (HTTP routes respond `501`).
 
 ## Runtime support
 
@@ -26,23 +25,16 @@ bun install --frozen-lockfile
 
 ## Project layout
 
-- `src/domain/` — runtime-independent concepts: bot IDs, public keys and `kid`s, audiences, JWT
-  claims, credentials, and registrations
-- `src/config/` — limits, defaults, and environment configuration
-- `src/storage/` — the `IdpRepository` interface and its libSQL implementation
-- `src/idp/` — IdP use cases, the HTTP API (`http/`), and the Telegram Auth Bot (`auth-bot/`)
-- `src/cli/` — the `tg-idp` provisioning CLI
-- `src/verifier/` — the self-contained reference verifier for downstream services (depends only on
-  `jose`)
-- `src/runtime/` — the thin adapter over runtime-specific APIs
-- `src/entrypoints/` — the server (Node.js, Deno, Bun), Cloudflare Workers, and CLI entry points
-- `tests/` — Vitest tests mirroring `src/`; `test.todo` entries list behavior still to implement
+- `src/app.ts` — HTTP API (Hono); its default export is the fetch handler
+- `src/auth-bot.ts` — Telegram Auth Bot (grammY)
+- `src/cli.ts` — provisioning CLI
+- `src/verifier.ts` — reference verifier for downstream services
 
 ## Commands
 
-- `bun run start` — run the IdP server (`src/entrypoints/server.ts`)
+- `bun run start` — run the IdP server (`src/app.ts`)
 - `bun run dev` — run the IdP server with file watching
-- `bun run cli` — run the provisioning CLI (`src/entrypoints/cli.ts`)
+- `bun run cli` — run the provisioning CLI (`src/cli.ts`)
 - `bun run test` — run tests
 - `bun run lint` — lint files with Biome
 - `bun run fmt` — format files with Biome

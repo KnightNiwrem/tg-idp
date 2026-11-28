@@ -1,3 +1,0 @@
-{
-  "entry": ["src/entrypoints/*.ts", "src/verifier/bot-jwt-verifier.ts"]
-}
