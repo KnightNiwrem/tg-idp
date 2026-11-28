@@ -20,7 +20,7 @@
    - Service keys have a separate cap and cannot call management endpoints, so exhausting the service-key cap never blocks administrative recovery.
 
 3. **Verify requests at runtime (downstream services)**
-   - Downstream services never talk to Telegram. They fetch a bot's service keys from the IdP's JWKS endpoint, cache them, and verify per-request EdDSA JWTs signed by the bot's service private key.
+   - Downstream services never talk to Telegram. They fetch a bot's service keys from the IdP's JWKS endpoint, cache them, and verify per-request Ed25519 JWTs signed by the bot's service private key.
 
 ### Why Telegram Only Confirms a Single-Use Code
 
@@ -30,7 +30,7 @@ Telegram updates can be delayed or redelivered, and the Auth Bot cannot reliably
 
 ### Keys and `kid`
 
-- **Public key format:** 32-byte raw Ed25519 public key, encoded as unpadded base64url.
+- **Public key format:** 32-byte raw Ed25519 public key (rejecting small-order points), encoded as unpadded base64url.
 - **Key ID (`kid`):** First 16 characters of `base64url(SHA-256(rawPubKeyBytes))`. Because it is deterministic, the CLI and IdP derive the same `kid` independently.
 
 | Property | Management Key | Service Key |
@@ -54,11 +54,11 @@ Telegram updates can be delayed or redelivered, and the Auth Bot cannot reliably
 
 ### JWT Format
 
-All bot-signed JWTs use `EdDSA` over Ed25519 and must carry `kid` in the header and `sub`, `aud`, `iat`, `exp`, and `jti` in the payload:
+All bot-signed JWTs use the fully-specified `Ed25519` algorithm (RFC 9864) and must carry `kid` in the header and `sub`, `aud`, `iat`, `exp`, and `jti` in the payload:
 
 ```json
 // Header
-{ "alg": "EdDSA", "kid": "a1b2c3d4e5f6g7h8" }
+{ "alg": "Ed25519", "kid": "a1b2c3d4e5f6g7h8" }
 
 // Payload (service token; management tokens use "aud": "idp")
 {
@@ -72,7 +72,7 @@ All bot-signed JWTs use `EdDSA` over Ed25519 and must carry `kid` in the header 
 
 - `sub` is the `botId` encoded as a decimal string.
 - `aud` must be a single string (not an array). Management tokens require `aud === "idp"`; service tokens require an `aud` allowed by the signing service key.
-- `iat` and `exp` are Unix epoch seconds with `exp > iat`, validated within the clock-skew tolerance and maximum token lifetime.
+- `iat` and `exp` are Unix epoch seconds with `exp > iat`, validated explicitly against `iat <= now + clockSkew`, `exp > now - clockSkew`, and `exp - iat <= maxLifetime`.
 - `jti` is a non-empty string (1–128 printable ASCII characters) required on every token. The IdP enforces replay protection on management JWTs (scoped per `(botId, jti)` until `exp` + clock skew); downstream services may optionally enforce replay protection on service JWTs.
 
 ### Credential Formats
@@ -122,11 +122,11 @@ All limits and durations are configurable unless noted as fixed:
 ### 2. Data Model and Consistency
 
 - **Entities:**
-  - **Management key** (unique on `botId`): `botId` (64-bit integer), `kid`, `publicKey`, `createdAt`, `expiresAt`. Expired rows are retained until replaced by a new `/confirm` or deleted via `DELETE /management-key` so callers receive `401 management_key_expired` rather than `401 unknown_key`.
+  - **Management key** (unique on `botId`): `botId` (positive safe integer; Telegram IDs use at most 52 significant bits, stored as 64-bit integer in SQLite), `kid`, `publicKey`, `createdAt`, `expiresAt`. Expired rows are retained until replaced by a new `/confirm` or deleted via `DELETE /management-key` so callers receive `401 management_key_expired` rather than `401 unknown_key`.
   - **Service key** (unique on `(botId, kid)`): `botId`, `kid`, `publicKey`, `audiences`, `createdAt`.
   - **Registration** (unique on `code`): `code` (≥128 bits CSPRNG, base64url), `botId`, `kid`, `publicKey`, `status` (`pending` | `confirmed` | `cancelled` | `expired`), `createdAt`, `expiresAt`, `managementKeyExpiresAt?`.
   - **Used management token** (unique on `(botId, jti)`): retained until `exp` + clock skew.
-- **Atomicity:** Multi-step state transitions (confirming a registration, upserting a service key against the cap, atomic replacement, and revocations) must execute atomically in a write transaction that acquires its write lock before its first read, preventing races on key-cap counts, pending checks, and cancellations. Write transactions must not perform external I/O (libSQL remote write locks time out after 5 seconds).
+- **Atomicity:** Multi-step state transitions (confirming a registration, upserting a service key against the cap, atomic replacement, and revocations) must execute atomically in a write transaction that acquires its write lock before its first read (`BEGIN IMMEDIATE`), preventing races on key-cap counts, pending checks, and cancellations. Write transactions must not perform external I/O (libSQL remote write transactions have a 5-second hard completion timeout).
 - **Cleanup:** Expired registrations (past retention) and expired used-token records are purged periodically or opportunistically on writes so the design works cleanly on serverless runtimes without background timers.
 
 ### 3. HTTP API
@@ -137,19 +137,19 @@ The HTTP API never accepts, logs, or stores Telegram bot tokens. All timestamps 
 
 - **`POST /v1/registrations`**
   - Body: `{ "botId": 123, "publicKey": "<base64url>" }`.
-  - Validates `botId` (`400 invalid_bot_id`) and `publicKey` (`400 invalid_public_key`).
+  - Validates `botId` as a positive safe integer (`400 invalid_bot_id`) and `publicKey` as a valid non-small-order 32-byte Ed25519 key (`400 invalid_public_key`).
   - Creates a pending management-key registration and returns `201 { "code", "kid", "status": "pending", "expiresAt" }`.
   - Deliberately has **no per-`botId` pending cap**: capping an unauthenticated endpoint would let anyone block a bot from registering. Pending rows are small, short-lived, and purged after retention.
 - **`GET /v1/registrations/:code`**
-  - Returns `200 { "status", "botId", "kid", "expiresAt", "managementKeyExpiresAt"? }` (reporting `expired` once past `expiresAt`), or `404` for an unknown code.
+  - Returns `200 { "status", "botId", "kid", "expiresAt", "managementKeyExpiresAt"? }` (reporting `expired` when `status` is `pending` and `now >= expiresAt`), or `404` for an unknown code.
 
 #### Key Management (Management Key Auth)
 
 All endpoints below require `Authorization: Bearer <jwt>` signed by the bot's active management key (see [JWT Format](#jwt-format)). Validation runs in this order:
 
-1. Parse header/claims and verify `aud === "idp"`, `0 < exp - iat <= 60`, and `iat`/`exp` within ±30s (`401`).
+1. Parse header/claims and verify `alg === "Ed25519"`, string `aud === "idp"`, `0 < exp - iat <= 60`, `iat <= now + 30`, and `exp > now - 30` (`401`).
 2. Look up the management key for `sub` (`401 unknown_key` if missing or `kid` does not match, including service keys or superseded management keys).
-3. Verify the EdDSA signature (`401 invalid_signature`).
+3. Verify the Ed25519 signature (`401 invalid_signature`).
 4. Check `now < managementKey.expiresAt` with zero clock skew (`401 management_key_expired`).
 5. Check `sub === :botId` in the path (`403 forbidden`).
 6. Atomically record `(botId, jti)` (`401 token_replayed` if already used).
@@ -178,27 +178,27 @@ Endpoints:
         {
           "kty": "OKP",
           "crv": "Ed25519",
-          "alg": "EdDSA",
+          "alg": "Ed25519",
           "use": "sig",
           "kid": "<deterministic_kid>",
           "x": "<base64url_raw_32byte_pubkey>",
-          "aud": ["session"]
+          "tg_idp_aud": ["session"]
         }
       ]
     }
     ```
 
-  - `aud` is a non-standard JWK extension member carrying the key's allowed audiences.
+  - `tg_idp_aud` is a private, collision-resistant JWK extension member carrying the key's allowed audiences.
   - Returns `200 { "keys": [] }` when a bot has no active service keys, never `404`. Sets `Cache-Control: public, max-age=60`.
 - **`GET /v1/auth/verify`**
-  - Diagnostic endpoint allowing bot owners to verify a service JWT end to end against their registered **service keys** (management keys return `401 unknown_key`).
-  - Returns `200 { "botId", "kid", "audiences" }`, or `401` with `malformed_token`, `missing_claim`, `unknown_key`, `invalid_signature`, `token_expired`, `token_lifetime_too_long`, or `invalid_audience`.
+  - Requires `Authorization: Bearer <jwt>`. Diagnostic endpoint allowing bot owners to verify a service JWT end to end against their registered **service keys** (management keys return `401 unknown_key`).
+  - Returns `200 { "botId", "kid", "audiences" }`, or `401` with `malformed_token`, `missing_claim`, `unknown_key`, `invalid_signature`, `token_expired`, `token_not_yet_valid`, `token_lifetime_too_long`, or `invalid_audience`.
 - **`GET /health`**
   - Returns `200 { "status": "ok" }` when the service is healthy (`503` if unhealthy).
 
 ### 4. Provisioning CLI
 
-Commands: `login`, `logout`, `init`, `rotate`, `revoke`, and `keys`. Raw credential strings are written to `stdout` for clean shell capture; status notices, expiry timestamps, and reminders are written to `stderr`.
+Commands: `login`, `logout`, `init`, `rotate`, `update`, `revoke`, and `keys`. Raw credential strings are written to `stdout` for clean shell capture; status notices, expiry timestamps, and reminders are written to `stderr`.
 
 ```bash
 # One-shot: confirms via Telegram, mints a service key, revokes the temp management key
@@ -207,16 +207,18 @@ BOT_TOKEN=... tg-idp init --aud session,analytics --auth-bot @MyAuthBot --idp-ur
 # Multi-command session: confirm once, run multiple operations, then log out
 export TG_IDP_MGMT_CREDENTIAL=$(BOT_TOKEN=... tg-idp login --auth-bot @MyAuthBot --idp-url https://idp.example.com)
 tg-idp init --aud session --idp-url https://idp.example.com
+tg-idp update --kid a1b2c3d4e5f6g7h8 --aud session,analytics --idp-url https://idp.example.com
 tg-idp revoke --kid a1b2c3d4e5f6g7h8 --idp-url https://idp.example.com
 tg-idp logout --idp-url https://idp.example.com
 ```
 
 Common environment variables / flags: `BOT_TOKEN` (`--bot-token`), `TG_IDP_URL` (`--idp-url`), `TG_IDP_AUTH_BOT` (`--auth-bot`), `TG_IDP_MGMT_CREDENTIAL` (`--mgmt-credential`).
 
-- **`login`** — Runs the Telegram `/confirm` flow (sending `/confirm <code>` without `parse_mode` to `@username`, never numeric ID), polls with exponential backoff, and outputs `botidp_mgmt_v1_...`. Maps `USER_BOT_TO_BOT_DISABLED` (mode disabled on either bot in `@BotFather`) and `chat not found` (invalid `--auth-bot`) to clear error messages while preserving Telegram's raw error description.
+- **`login`** — Runs the Telegram `/confirm` flow (sending `/confirm <code>` without `parse_mode` to `@username`, never numeric ID), polls with exponential backoff, and outputs `botidp_mgmt_v1_...`. Maps `USER_BOT_TO_BOT_DISABLED` (mode disabled on either bot), `chat not found` (invalid `--auth-bot`), and `403` self-send (`the bot can't send messages to the bot`) to clear error messages while preserving Telegram's raw error description.
 - **`logout`** — Calls `DELETE /v1/bots/:botId/management-key`, treating `401 unknown_key` or `401 management_key_expired` as already logged out.
-- **`init`** — Mints a service key using either `--mgmt-credential` or `BOT_TOKEN` + `--auth-bot` (automatically logging in and out around the command). Supports `--replace-all` (atomic replacement via `replaceAll: true`). Verifies the new key via `GET /v1/auth/verify` and outputs `botidp_v1_...`.
-- **`rotate`** — Mints an additional service key without revoking existing ones (does not accept `--replace-all`) and reminds the owner on `stderr` to revoke the old `kid` once deployed.
+- **`init`** — Mints a service key for `--aud` using either `--mgmt-credential` or `BOT_TOKEN` + `--auth-bot` (automatically logging in and out around the command). Supports `--replace-all` (atomic replacement via `replaceAll: true`). Verifies the new key via `GET /v1/auth/verify` (signing a diagnostic audience such as `verify` when `--aud *` is used) and outputs `botidp_v1_...`.
+- **`rotate`** — Mints an additional service key for `--aud` without revoking existing ones (does not accept `--replace-all`) and reminds the owner on `stderr` to revoke the old `kid` once deployed.
+- **`update`** — Updates `--aud` on an existing service key (`--kid`) by fetching its public key from `/jwks` and re-registering it via `POST /v1/bots/:botId/keys` (preserving `createdAt`).
 - **`revoke`** — Revokes `--kid <kid>` or `--all` service keys using `--mgmt-credential` or `BOT_TOKEN` + `--auth-bot`, printing the revoked `kid` list.
 - **`keys`** — Lists active service `kid`s and audiences from `/jwks` using `--bot-id`, `BOT_TOKEN`, or `--mgmt-credential`.
 - When a management call returns `401 unknown_key` or `401 management_key_expired`, the CLI reports that the management session expired or was superseded by a newer login.
@@ -225,10 +227,10 @@ Common environment variables / flags: `BOT_TOKEN` (`--bot-token`), `TG_IDP_URL` 
 
 A standalone module downstream services can import or copy, with `jose` as its only runtime dependency:
 
-- Reads the unverified `sub` to identify the bot, fetches `GET /v1/bots/:botId/jwks`, filters the JWK array to keys whose `aud` allows `expectedService`, and verifies the JWT against that filtered set using `jose.createLocalJWKSet` and `jose.jwtVerify` (with `audience: expectedService`).
-- Does not use `jose.createRemoteJWKSet`: `jose` only evaluates standard JWK fields (`kty`, `crv`, `alg`, `kid`, `use`, `key_ops`, `ext`) during key selection and ignores custom members like `aud`, so remote key sets cannot enforce per-key audience filtering without pre-filtering.
-- Caches per-bot filtered key sets in a bounded LRU cache (default 10-minute TTL, ignoring HTTP `max-age`) and refetches on an unknown `kid` with a 30-second per-bot cooldown.
-- Enforces all JWT rules (`EdDSA`, string `aud`, `exp > iat`, lifetime cap, presence of `jti`) and exposes an optional replay-check hook so downstream services can reject replayed `jti`s until `exp` + 30s. Without the hook, a captured service token remains replayable during that window.
+- Reads the unverified `sub`, validates it as a positive decimal integer (`botId`, rejecting non-numeric or path characters before URL construction), fetches `GET /v1/bots/:botId/jwks`, filters the JWK array to keys whose `tg_idp_aud` allows `expectedService`, and verifies the JWT against that filtered set using `jose.createLocalJWKSet` and `jose.jwtVerify` (with `audience: expectedService`).
+- Does not use `jose.createRemoteJWKSet`: `jose` only evaluates standard JWK fields (`kty`, `crv`, `alg`, `kid`, `use`, `key_ops`, `ext`) during key selection and ignores custom members like `tg_idp_aud`, so remote key sets cannot enforce per-key audience filtering without pre-filtering.
+- Caches per-bot JWKS (or per-`(botId, expectedService)` filtered key sets when a verifier instance serves multiple audiences) in a bounded LRU cache (default 10-minute TTL, ignoring HTTP `max-age`) and refetches on an unknown `kid` with a 30-second per-bot cooldown.
+- Explicitly enforces all JWT rules—including `alg === "Ed25519"`, single-string `aud`, `exp > iat`, `iat <= now + 30s`, lifetime cap, and presence of `jti`—and exposes an optional replay-check hook so downstream services can reject replayed `jti`s until `exp` + 30s. Without the hook, a captured service token remains replayable during that window.
 
 ## Security Model
 
@@ -237,7 +239,7 @@ A standalone module downstream services can import or copy, with `jose` as its o
 - **Service keys are runtime-only.** A leaked service key can only authenticate to its registered downstream audiences; it cannot mint, edit, or revoke keys.
 - **No lockout from the service-key cap.** Because management keys occupy a separate single-slot record and always supersede the previous management key on `/confirm`, exhausting the service-key cap can never prevent recovery.
 - **Incident runbooks:**
-  - **Leaked service key:** Revoke the compromised `kid` (`revoke --kid`), then run `rotate`.
+  - **Leaked service key:** Revoke the compromised `kid` (`revoke --kid`), then mint and deploy a replacement with `init`.
   - **Leaked management key:** Run `login` (or any `BOT_TOKEN`-backed CLI command) to supersede it immediately via `/confirm`, inspect active keys with `keys`, and revoke any unauthorized service keys (or `revoke --all`).
   - **Leaked `BOT_TOKEN`:** Rotating the token in `@BotFather` does not remove keys an attacker already minted. Recover by:
     1. Rotating `BOT_TOKEN` in `@BotFather`.
@@ -247,16 +249,16 @@ A standalone module downstream services can import or copy, with `jose` as its o
 
 - **Revocation latency:** Service-key revocations take effect immediately on the IdP, while downstream services continue accepting revoked keys until their local JWKS cache refreshes (up to ~10 minutes with the reference verifier's default TTL). If a CDN is placed in front of the IdP, invalidate JWKS entries on key changes. Management key replacement and revocation take effect immediately with no caching.
 - **Edge rate limiting:** Deployments must enforce per-IP HTTP rate limiting at the network edge (CDN, reverse proxy, or platform edge), particularly on `POST /v1/registrations`, the only unauthenticated write endpoint.
-- **Telegram Bot-to-Bot prerequisites:** Both the client bot and the Auth Bot must have Bot-to-Bot Communication Mode enabled in `@BotFather` (verified live on Bot API 10.4: [both-enabled recording](https://github.com/KnightNiwrem/tg-bot-api-emulator/issues/155#issuecomment-6791557230), [mode on/off matrix](https://github.com/KnightNiwrem/tg-bot-api-emulator/issues/155#issuecomment-6793695525)):
+- **Telegram Bot-to-Bot prerequisites:** Both the client bot and the Auth Bot must have Bot-to-Bot Communication Mode enabled (via `@BotFather` or Bot API 10.5+ `setMySettings`; verified live on Bot API 10.4: [both-enabled recording](https://github.com/KnightNiwrem/tg-bot-api-emulator/issues/155#issuecomment-6791557230), [mode on/off matrix](https://github.com/KnightNiwrem/tg-bot-api-emulator/issues/155#issuecomment-6793695525)):
   - If either bot has the mode disabled, `sendMessage` fails in both directions with `400 Bad Request: USER_BOT_TO_BOT_DISABLED` without indicating which side is misconfigured.
   - An unknown username returns `400 Bad Request: chat not found` even when the mode is disabled.
-  - Addressing a peer by `@username` (case-insensitive; usernames need not end in `bot`) succeeds and delivers a `message` update with `chat.type: "private"` and `from.is_bot: true`. Addressing by numeric ID fails with `400 Bad Request: chat not found` until resolved by username first.
+  - Addressing a peer by `@username` (case-insensitive) succeeds and delivers a `message` update with `chat.type: "private"` and `from.is_bot: true`. Addressing by numeric ID fails with `400 Bad Request: chat not found` until resolved by username first.
 
 ## Tech Stack and Runtime Portability
 
 - **Language & runtimes:** TypeScript targeting **Node.js LTS release lines >= 24** (`24`, `26`, and `27+`; legacy non-LTS `25` and Alpha prereleases are not targeted), **Deno**, **Bun**, and **Cloudflare Workers**. Prefer web-standard APIs, isolating any runtime-specific code behind a thin adapter.
 - **Development tooling:** Bun for local development and package management (dev-only; not a deployment requirement) and Biome for linting and formatting.
-- **Testing:** Vitest (rather than `bun:test`) so the test suite can validate cross-runtime compatibility.
+- **Testing:** Vitest (rather than `bun:test`) so the test suite can validate cross-runtime compatibility (using `@cloudflare/vitest-plugin` for Workers).
 - **JWT/JWK:** [`jose`](https://github.com/panva/jose) across the IdP, CLI, and reference verifier.
 - **Bot framework & rate limiting:** grammY with the `ratelimiter` plugin (Redis or an HTTP-compatible store adapter in production/serverless; in-memory for local dev and tests).
-- **Storage:** SQLite via libSQL (`@libsql/client`), supporting local files and Turso in serverless deployments via environment variables.
+- **Storage:** SQLite via libSQL (`@libsql/client` for local files and remote Turso on Node/Deno/Bun; `@libsql/client/web` for Cloudflare Workers and edge runtimes), configured via environment variables.
